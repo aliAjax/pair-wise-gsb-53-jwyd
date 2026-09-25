@@ -1,17 +1,19 @@
 """移民案件期限与材料管理领域规则与状态转换。"""
 from typing import Any, Dict, Iterable, Tuple
 
-from .domain import Actor, Conflict, ValidationError, boolean, choice, integer, number, text, text_list
+from .domain import Actor, Conflict, ValidationError, boolean, choice, integer, number, optional_text, text, text_list
 
 
 INITIAL_STATE = "draft"
 CREATE_ROLES = {'intake_officer'}
-ACTION_ROLES = {'submit': {'legal_rep', 'case_officer'}, 'request_evidence': {'case_officer'}, 'respond': {'legal_rep'}, 'decide': {'case_officer', 'supervisor'}, 'appeal': {'legal_rep'}, 'close': {'supervisor'}}
+ACTION_ROLES = {'submit': {'legal_rep', 'case_officer'}, 'request_evidence': {'case_officer'}, 'respond': {'legal_rep'}, 'decide': {'case_officer', 'supervisor'}, 'appeal': {'legal_rep'}, 'close': {'supervisor'}, 'transfer': {'legal_rep', 'case_officer', 'supervisor'}, 'accept_transfer': {'legal_rep', 'case_officer', 'supervisor'}, 'decline_transfer': {'legal_rep', 'case_officer', 'supervisor'}}
 TRANSITIONS = {'submit': {'draft': 'submitted'}, 'request_evidence': {'submitted': 'evidence_requested'}, 'respond': {'evidence_requested': 'response_received'}, 'decide': {'submitted': 'decided', 'response_received': 'decided'}, 'appeal': {'decided': 'appealed'}, 'close': {'decided': 'closed', 'appealed': 'closed'}}
+ASSIGNMENT_ACTIONS = {'transfer', 'accept_transfer', 'decline_transfer'}
 
 
 class DomainRules:
     INITIAL_STATE = INITIAL_STATE
+    ASSIGNMENT_ACTIONS = ASSIGNMENT_ACTIONS
 
     def known_role(self, role: str) -> bool:
         all_roles = set(CREATE_ROLES)
@@ -34,6 +36,14 @@ class DomainRules:
         integer(p, "response_day", 0)
         boolean(p, "representation_active")
         text_list(p, "required_documents", 1)
+        primary = text(p, "primary_agent")
+        co_agents = []
+        for name in text_list(p, "co_agents", 0):
+            if name == primary:
+                raise ValidationError("协办不能与主办相同")
+            if name not in co_agents:
+                co_agents.append(name)
+        p["co_agents"] = co_agents
         return p
 
     def prepare_create(self, payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -43,6 +53,8 @@ class DomainRules:
         p["overdue"] = p["days_remaining"] < 0
         p["submitted_documents"] = []
         p["missing_documents"] = list(p["required_documents"])
+        p["pending_transfer"] = None
+        p["former_agents"] = []
         return p
 
     def check_create_conflicts(self, payload: Dict[str, Any], existing: Iterable[Dict[str, Any]]) -> None:
@@ -103,3 +115,44 @@ class DomainRules:
             summary = "案件归档"
         p.update(changes)
         return new_state, p, summary or ("已执行%s" % action)
+
+    def apply_assignment(self, record: Dict[str, Any], action: str, data: Dict[str, Any], actor: Actor) -> Tuple[Dict[str, Any], str, Dict[str, Any]]:
+        """经办人指派动作：不改变案件状态，只调整主办/协办并返回审计细节。"""
+        p = dict(record["payload"])
+        data = dict(data or {})
+        primary = p.get("primary_agent", "")
+        if action == "transfer":
+            if record["state"] == "closed":
+                raise Conflict("案件已结案，不能转交")
+            if p.get("pending_transfer"):
+                raise Conflict("已有待接收的转交，请先等待接收或拒绝")
+            to_user = text(data, "to_user")
+            if to_user == primary:
+                raise ValidationError("新主办不能是当前主办")
+            p["pending_transfer"] = {"to_user": to_user, "initiated_by": actor.user_id, "note": optional_text(data, "note")}
+            summary = "已指派新主办，等待接收"
+            details = {"from_primary": primary, "to_user": to_user, "initiated_by": actor.user_id}
+        elif action == "accept_transfer":
+            pending = p.get("pending_transfer") or {}
+            to_user = pending.get("to_user", "")
+            if not to_user:
+                raise Conflict("没有待接收的转交")
+            former = [item for item in p.get("former_agents", []) if item.get("user_id") not in (primary, to_user)]
+            former.append({"user_id": primary, "capacity": "primary"})
+            p["former_agents"] = former
+            p["primary_agent"] = to_user
+            p["co_agents"] = [name for name in p.get("co_agents", []) if name != to_user]
+            p["pending_transfer"] = None
+            summary = "新主办已接收，主办身份立即切换"
+            details = {"from_primary": primary, "to_primary": to_user}
+        elif action == "decline_transfer":
+            pending = p.get("pending_transfer") or {}
+            to_user = pending.get("to_user", "")
+            if not to_user:
+                raise Conflict("没有待接收的转交")
+            p["pending_transfer"] = None
+            summary = "新主办拒绝接收，案件归还原主办"
+            details = {"declined_by": to_user, "primary_agent": primary}
+        else:
+            raise ValidationError("未知的经办人操作")
+        return p, summary, details

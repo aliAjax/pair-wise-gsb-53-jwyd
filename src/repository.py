@@ -58,8 +58,9 @@ class Repository:
         item["payload"] = json.loads(item["payload"])
         return item
 
-    def create(self, reference: str, state: str, payload: Dict[str, Any], actor_id: str) -> Dict[str, Any]:
+    def create(self, reference: str, state: str, payload: Dict[str, Any], actor_id: str, audit_details: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         now = _now()
+        details = audit_details if audit_details is not None else {"state": state}
         try:
             with self._connect() as connection:
                 cursor = connection.execute(
@@ -69,7 +70,7 @@ class Repository:
                 record_id = int(cursor.lastrowid)
                 connection.execute(
                     "INSERT INTO audit_events(record_id,action,actor_id,version,details,created_at) VALUES(?,?,?,?,?,?)",
-                    (record_id, "created", actor_id, 1, json.dumps({"state": state}, ensure_ascii=False, sort_keys=True), now),
+                    (record_id, "created", actor_id, 1, json.dumps(details, ensure_ascii=False, sort_keys=True), now),
                 )
                 row = connection.execute("SELECT * FROM records WHERE id=?", (record_id,)).fetchone()
         except sqlite3.IntegrityError as exc:
