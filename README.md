@@ -35,6 +35,24 @@ python3 app.py --db ./data.db --port 8329
 
 除`/health`和`/`外，请求需提供`X-User-Id`、`X-Role`，可选`X-Org`。
 
+## 主办与协办分工
+
+收案（创建记录）时必须指定一名主办`lead_rep`，可另指定协办列表`co_reps`（默认为空，主办不能同时担任协办）。
+
+- 协办可补交材料（`respond`）并查看时间线；`submit`、`appeal`、`decide`、`close`等动作仅主办可办理，决定与结案始终由主办负责。
+- `request_evidence`为官方动作，不受分工限制；`admin`角色不受分工限制。
+- 分工调整动作为`assign_co`（更新协办）、`transfer`（转交）、`accept`（接收）、`decline`（拒绝），不改变案件状态，每次指派、接收和拒绝都会写入办理记录（审计时间线）。
+- 主办通过`transfer`指定`new_lead`发起转交；接收前原主办照常办理，新代理人暂无权操作。新代理人`accept`后身份立即切换，旧主办进入`former_leads`并保留历史查看；`decline`则案件归还原主办。已归档（`closed`）案件不能再调整分工。
+
+转交示例：
+
+```bash
+curl -X POST /api/records/1/actions/transfer -H "X-User-Id: lawyer-lead" -H "X-Role: legal_rep" \
+  -d '{"expected_version":3,"data":{"new_lead":"lawyer-new","note":"离职交接"}}'
+curl -X POST /api/records/1/actions/accept -H "X-User-Id: lawyer-new" -H "X-Role: legal_rep" \
+  -d '{"expected_version":4,"data":{}}'
+```
+
 ## 测试
 
 ```bash

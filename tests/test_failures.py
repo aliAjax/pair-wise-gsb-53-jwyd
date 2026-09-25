@@ -6,8 +6,9 @@ from app import build_service
 from src.domain import Actor, Conflict, PermissionDenied
 
 
-CREATE_DATA = {'applicant_id': 'A-900', 'case_type': 'family', 'received_day': 100, 'deadline_days': 30, 'response_day': 110, 'representation_active': True, 'required_documents': ['passport', 'sponsor_letter']}
-FLOW = [('submit', 'legal_rep', {'documents': ['passport', 'sponsor_letter']}, 'submitted'), ('request_evidence', 'case_officer', {'evidence_request_day': 115, 'allowed_days': 10, 'evidence_request': '补充收入证明'}, 'evidence_requested'), ('respond', 'legal_rep', {'response_day': 120, 'documents': ['income_proof']}, 'response_received'), ('decide', 'case_officer', {'decision': 'granted', 'decision_reason': '材料充分'}, 'decided')]
+LEAD = 'lawyer-lead'
+CREATE_DATA = {'applicant_id': 'A-900', 'case_type': 'family', 'received_day': 100, 'deadline_days': 30, 'response_day': 110, 'representation_active': True, 'required_documents': ['passport', 'sponsor_letter'], 'lead_rep': LEAD}
+FLOW = [('submit', Actor(LEAD, 'legal_rep'), {'documents': ['passport', 'sponsor_letter']}, 'submitted'), ('request_evidence', Actor('officer-1', 'case_officer'), {'evidence_request_day': 115, 'allowed_days': 10, 'evidence_request': '补充收入证明'}, 'evidence_requested'), ('respond', Actor(LEAD, 'legal_rep'), {'response_day': 120, 'documents': ['income_proof']}, 'response_received'), ('decide', Actor(LEAD, 'case_officer'), {'decision': 'granted', 'decision_reason': '材料充分'}, 'decided')]
 
 
 class FailureTest(unittest.TestCase):
@@ -28,7 +29,7 @@ class FailureTest(unittest.TestCase):
     def test_stale_version_is_rejected(self):
         record = self.service.create(Actor("creator", "intake_officer"), "IMM-29001", CREATE_DATA)
         first = FLOW[0]
-        record = self.service.act(Actor("operator", first[1]), record["id"], record["version"], first[0], first[2])
+        record = self.service.act(first[1], record["id"], record["version"], first[0], first[2])
         second = FLOW[1]
         with self.assertRaises(Conflict):
-            self.service.act(Actor("operator", second[1]), record["id"], record["version"] - 1, second[0], second[2])
+            self.service.act(second[1], record["id"], record["version"] - 1, second[0], second[2])
